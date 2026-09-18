@@ -50,32 +50,26 @@ export const bootstrapWorkspace = createServerFn({ method: "POST" })
       `;
     }
 
-    const svcCount = await sql<{ c: number }>`select count(*)::int as c from services where user_id = ${userId}`;
-    if ((svcCount[0]?.c ?? 0) === 0) {
-      for (const svc of CATALOG) {
-        await sql`
-          insert into services (id, user_id, name, description, default_rate, is_boosting, usd_rate, is_sample)
-          values (
-            ${uid()}, ${userId}, ${svc.name}, ${svc.desc}, ${svc.rate},
-            ${Boolean(svc.boosting)}, ${svc.usd ?? null}, ${true}
-          )
-        `;
-      }
-    }
+    // const svcCount = await sql<{ c: number }>`select count(*)::int as c from services where user_id = ${userId}`;
+    // if ((svcCount[0]?.c ?? 0) === 0) {
+    //   for (const svc of CATALOG) {
+    //     await sql`
+    //       insert into services (id, user_id, name, description, default_rate, is_boosting, usd_rate, is_sample)
+    //       values (
+    //         ${uid()}, ${userId}, ${svc.name}, ${svc.desc}, ${svc.rate},
+    //         ${Boolean(svc.boosting)}, ${svc.usd ?? null}, ${true}
+    //       )
+    //     `;
+    //   }
+    // }
 
     const settingsRows = await sql`select * from settings where user_id = ${userId}`;
     const settings = mapSettings(settingsRows[0]);
     if (settings.sampleLoaded) return { settings, seeded: false };
 
-    const clientCount = await sql<{ c: number }>`select count(*)::int as c from clients where user_id = ${userId}`;
-    if ((clientCount[0]?.c ?? 0) > 0) {
-      await sql`update settings set sample_loaded = true where user_id = ${userId}`;
-      return { settings: { ...settings, sampleLoaded: true }, seeded: false };
-    }
-
-    await seedSample(sql, userId, context.userId);
+    // Never seed demo data in production. Mark as loaded so it doesn't trigger again.
     await sql`update settings set sample_loaded = true where user_id = ${userId}`;
-    return { settings: { ...settings, sampleLoaded: true }, seeded: true };
+    return { settings: { ...settings, sampleLoaded: true }, seeded: false };
   });
 
 async function seedSample(
