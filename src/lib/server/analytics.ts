@@ -7,6 +7,7 @@ import type { AnalyticsData, DashboardStats, InvoiceStatus } from "@/lib/types";
 import { n } from "./map";
 import { refreshOverdue } from "./status";
 import { requirePermission } from "./authz";
+import { getAgencyOwnerId } from "./workspace";
 
 function monthKey(iso: string) {
   return iso.slice(0, 7);
@@ -17,7 +18,8 @@ export const getDashboard = createServerFn({ method: "GET" })
   .handler(async ({ context }): Promise<{ stats: DashboardStats; recentInvoices: { id: string; invoiceNumber: string; clientName: string; total: number; status: InvoiceStatus; issueDate: string }[]; recentPayments: { id: string; amount: number; clientName: string; method: string; paymentDate: string; receiptNumber: string }[] }> => {
     requirePermission(context.user, "view_analytics");
     const sql = await getSql();
-    await refreshOverdue(sql, context.userId);
+    const ownerId = await getAgencyOwnerId(sql);
+    await refreshOverdue(sql, ownerId);
     
     const today = dhakaIsoDate();
     const month = today.slice(0, 7);
@@ -40,7 +42,7 @@ export const getDashboard = createServerFn({ method: "GET" })
         count(*) filter (where status = 'overdue') as overdue_count,
         count(*) filter (where status = 'void') as void_count
       from invoices
-      where user_id = ${context.userId}
+      where user_id = ${ownerId}
     `;
     const s = statsRows[0] || {};
     const stats: DashboardStats = {
@@ -62,7 +64,7 @@ export const getDashboard = createServerFn({ method: "GET" })
       select i.id, i.invoice_number, coalesce(c.name, 'Client') as client_name, i.total, i.status, i.issue_date
       from invoices i
       left join clients c on c.id = i.client_id
-      where i.user_id = ${context.userId}
+      where i.user_id = ${ownerId}
       order by i.created_at desc
       limit 6
     `;
@@ -71,7 +73,7 @@ export const getDashboard = createServerFn({ method: "GET" })
       from payments p
       join invoices i on i.id = p.invoice_id
       left join clients c on c.id = i.client_id
-      where p.user_id = ${context.userId} and p.status = 'active'
+      where p.user_id = ${ownerId} and p.status = 'active'
       order by p.created_at desc
       limit 6
     `;
@@ -117,7 +119,9 @@ export const getAnalytics = createServerFn({ method: "GET" })
   .validator(analyticsInput)
   .handler(async ({ data, context }): Promise<AnalyticsData> => {
     requirePermission(context.user, "view_analytics");
-    return executeAnalytics(context.userId, data);
+    const sql = await getSql();
+    const ownerId = await getAgencyOwnerId(sql);
+    return executeAnalytics(ownerId, data);
   });
 
 export async function executeAnalytics(userId: string, data: z.infer<typeof analyticsInput>): Promise<AnalyticsData> {

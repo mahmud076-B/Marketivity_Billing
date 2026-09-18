@@ -9,7 +9,7 @@ const colors = {
   ink: "#1A1424",
   muted: "#6B6278",
   line: "#E6DFD4",
-  soft: "#F7F1E8",
+  soft: "#FFF0F5",
   night: "#0B0714",
   cream: "#F4EFE6",
   lilac: "#C4B8D4",
@@ -104,8 +104,8 @@ const styles = StyleSheet.create({
   documentTitle: {
     fontSize: 22,
     fontWeight: "bold",
-    marginBottom: 6,
-    lineHeight: 1,
+    marginBottom: 8,
+    marginTop: -4,
   },
   invoiceNumber: {
     color: colors.muted,

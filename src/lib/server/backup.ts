@@ -2,13 +2,14 @@ import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { getSql } from "@/lib/db";
 import { requirePermission } from "./authz";
+import { getAgencyOwnerId } from "./workspace";
 
 export const exportBackup = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
   .handler(async ({ context }) => {
     requirePermission(context.user, "export_backup");
     const sql = await getSql();
-    const userId = context.userId;
+    const userId = await getAgencyOwnerId(sql);
     const [settings, clients, services, invoices, items, payments, serials, audit] = await Promise.all([
       sql`select * from settings where user_id = ${userId}`,
       sql`select * from clients where user_id = ${userId}`,
@@ -145,7 +146,7 @@ export const importBackup = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     requirePermission(context.user, "import_backup");
     const sql = await getSql();
-    const userId = context.userId;
+    const userId = await getAgencyOwnerId(sql);
 
     return await sql.transaction(async (tx) => {
       // Step 1: Clean slate for user inside transaction

@@ -5,6 +5,8 @@ import { getClientStatement, listClients } from "./clients";
 import { listInvoices, type InvoiceFilters } from "./invoices";
 import { listPayments } from "./payments";
 import { requirePermission } from "./authz";
+import { getSql } from "@/lib/db";
+import { getAgencyOwnerId } from "./workspace";
 import { STATUS_LABEL } from "@/lib/types";
 
 export const exportClientsCsv = createServerFn({ method: "GET" })
@@ -169,7 +171,9 @@ export const exportAnalyticsCsv = createServerFn({ method: "GET" })
   .validator((data: { startDate?: string; endDate?: string }) => data)
   .handler(async ({ data, context }) => {
     requirePermission(context.user, "export_analytics");
-    const analytics = await executeAnalytics(context.userId, data);
+    const sql = await getSql();
+    const ownerId = await getAgencyOwnerId(sql);
+    const analytics = await executeAnalytics(ownerId, data);
     const rows = generateAnalyticsCsvRows(analytics, data);
     return formatCsv(rows);
   });

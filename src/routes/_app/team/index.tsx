@@ -39,11 +39,14 @@ function TeamPage() {
     mutationFn: inviteUser,
     onSuccess: (res) => {
       refetch();
-      // Generate full invite link
-      const url = new URL(window.location.origin);
-      url.pathname = "/invite";
-      url.searchParams.set("token", res.token);
-      setInviteLink(url.toString());
+      // Preview has no fixed public origin; production returns its configured canonical URL.
+      if (res.inviteUrl) {
+        setInviteLink(res.inviteUrl);
+      } else {
+        const url = new URL("/invite", window.location.origin);
+        url.searchParams.set("token", res.token);
+        setInviteLink(url.toString());
+      }
     },
     onError: (err: any) => {
       toast.error("Failed to invite", { description: err.message });

@@ -11,6 +11,7 @@ import { requirePermission } from "./authz";
 import { mapClient, mapInvoice, mapInvoiceRow, mapItem, mapPayment } from "./map";
 import { nextSerial } from "./serial";
 import { refreshOverdue } from "./status";
+import { getAgencyOwnerId } from "./workspace";
 
 export type InvoiceFilters = {
   status?: InvoiceStatus | "all";
@@ -88,12 +89,13 @@ export const listInvoices = createServerFn({ method: "GET" })
   .handler(async ({ context, data }): Promise<InvoiceListRow[]> => {
     requirePermission(context.user, "view_invoices");
     const sql = await getSql();
-    await refreshOverdue(sql, context.userId);
+    const ownerId = await getAgencyOwnerId(sql);
+    await refreshOverdue(sql, ownerId);
     const rows = await sql`
       select i.*, coalesce(c.name, 'Client') as client_name, coalesce(c.business_name, '') as business_name
       from invoices i
       left join clients c on c.id = i.client_id
-      where i.user_id = ${context.userId}
+      where i.user_id = ${ownerId}
       order by i.created_at desc
     `;
     let list = rows.map((r) => mapInvoiceRow(r));
@@ -122,29 +124,30 @@ export const getInvoice = createServerFn({ method: "GET" })
   .handler(async ({ context, data: id }) => {
     requirePermission(context.user, "view_invoices");
     const sql = await getSql();
-    await refreshOverdue(sql, context.userId);
+    const ownerId = await getAgencyOwnerId(sql);
+    await refreshOverdue(sql, ownerId);
     const rows = await sql`
       select i.*, coalesce(c.name, 'Client') as client_name, coalesce(c.business_name, '') as business_name
       from invoices i
       left join clients c on c.id = i.client_id
-      where i.id = ${id} and i.user_id = ${context.userId}
+      where i.id = ${id} and i.user_id = ${ownerId}
     `;
     if (!rows[0]) throw new Error("Invoice not found.");
     const invoice = mapInvoice(rows[0]);
-    const clientRows = await sql`select * from clients where id = ${invoice.clientId} and user_id = ${context.userId}`;
-    const items = await sql`select * from invoice_items where invoice_id = ${id} and user_id = ${context.userId} order by sort_order`;
+    const clientRows = await sql`select * from clients where id = ${invoice.clientId} and user_id = ${ownerId}`;
+    const items = await sql`select * from invoice_items where invoice_id = ${id} and user_id = ${ownerId} order by sort_order`;
     const payments = await sql`
       select p.*, i.invoice_number, i.client_id, coalesce(c.name, 'Client') as client_name
       from payments p
       join invoices i on i.id = p.invoice_id
       left join clients c on c.id = i.client_id
-      where p.invoice_id = ${id} and p.user_id = ${context.userId}
+      where p.invoice_id = ${id} and p.user_id = ${ownerId}
       order by p.created_at asc
     `;
     const audit = await sql`
       select id, entity_type, entity_id, action, details, created_at
       from audit_log
-      where user_id = ${context.userId} and entity_id = ${id}
+      where entity_id = ${id}
       order by created_at desc
       limit 40
     `;
@@ -167,9 +170,10 @@ export const previewNextInvoiceNumber = createServerFn({ method: "GET" })
   .handler(async ({ context }) => {
     requirePermission(context.user, "create_invoices");
     const sql = await getSql();
+    const ownerId = await getAgencyOwnerId(sql);
     const year = dhakaYear();
     const rows = await sql<{ last_number: number }>`
-      select last_number from serials where user_id = ${context.userId} and kind = 'invoice' and year = ${year}
+      select last_number from serials where user_id = ${ownerId} and kind = 'invoice' and year = ${year}
     `;
     const next = Number(rows[0]?.last_number ?? 0) + 1;
     return `MKT-INV-${year}-${String(next).padStart(4, "0")}`;
@@ -186,9 +190,10 @@ export const createInvoice = createServerFn({ method: "POST" })
     const totals = totalsOf(data);
     if (totals.total < 0) throw new Error("Please enter a valid amount.");
     const sql = await getSql();
+    const ownerId = await getAgencyOwnerId(sql);
     const now = nowDhaka();
     const id = uid();
-    const number = await nextSerial(sql, context.userId, "invoice", now.year);
+    const number = await nextSerial(sql, ownerId, "invoice", now.year);
     const issueDate = data.issueDate || now.isoDate;
     const issueTime = data.issueTime || now.time;
     const paid = parseMoney(data.initialPayment?.amount ?? 0);
@@ -203,7 +208,7 @@ export const createInvoice = createServerFn({ method: "POST" })
         total, paid_amount, due_amount, payment_terms, notes, is_boosting, ad_budget_usd,
         marketivity_rate, is_sample
       ) values (
-        ${id}, ${context.userId}, ${number}, ${data.clientId}, ${issueDate}, ${issueTime},
+        ${id}, ${ownerId}, ${number}, ${data.clientId}, ${issueDate}, ${issueTime},
         ${data.dueDate || null}, ${status},
         ${totals.subtotal}, ${data.discountType}, ${parseMoney(data.discountValue)},
         ${data.taxEnabled}, ${parseMoney(data.taxRate)}, ${totals.taxAmount}, ${totals.serviceCharge}, ${totals.cashOutCharge},
@@ -212,12 +217,12 @@ export const createInvoice = createServerFn({ method: "POST" })
         ${data.isBoosting ? parseMoney(data.marketivityRate) || 150 : null}, ${false}
       )
     `;
-    await insertItems(sql, context.userId, id, data, totals.advertisingCost);
+    await insertItems(sql, ownerId, id, data, totals.advertisingCost);
     await logAudit(sql, context.userId, "invoice", id, "invoice.created", number);
 
     if (paid > 0 && data.initialPayment) {
-      const txn = await nextSerial(sql, context.userId, "transaction", now.year);
-      const rcp = await nextSerial(sql, context.userId, "receipt", now.year);
+      const txn = await nextSerial(sql, ownerId, "transaction", now.year);
+      const rcp = await nextSerial(sql, ownerId, "receipt", now.year);
       const method: PaymentMethod = data.initialPayment.method;
       await sql`
         insert into payments (
@@ -225,7 +230,7 @@ export const createInvoice = createServerFn({ method: "POST" })
           payment_date, payment_time, external_txn_id, notes, previous_due, remaining_due,
           status, voided_at, void_reason
         ) values (
-          ${uid()}, ${context.userId}, ${id}, ${txn}, ${rcp}, ${paid}, ${method},
+          ${uid()}, ${ownerId}, ${id}, ${txn}, ${rcp}, ${paid}, ${method},
           ${issueDate}, ${issueTime}, ${data.initialPayment.externalTxnId.trim()},
           ${data.initialPayment.notes.trim()}, ${totals.total}, ${dueAmt},
           ${"active"}, ${null}, ${""}
@@ -248,7 +253,8 @@ export const updateInvoice = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     requirePermission(context.user, "update_invoices");
     const sql = await getSql();
-    const existing = await sql`select * from invoices where id = ${data.id} and user_id = ${context.userId}`;
+    const ownerId = await getAgencyOwnerId(sql);
+    const existing = await sql`select * from invoices where id = ${data.id} and user_id = ${ownerId}`;
     if (!existing[0]) throw new Error("Invoice not found.");
     if (String(existing[0].status) === "void") throw new Error("Voided invoices cannot be edited.");
     if (!data.clientId) throw new Error("Please select a client.");
@@ -283,10 +289,10 @@ export const updateInvoice = createServerFn({ method: "POST" })
         ad_budget_usd = ${data.isBoosting ? parseMoney(data.adBudgetUsd) : null},
         marketivity_rate = ${data.isBoosting ? parseMoney(data.marketivityRate) || 150 : null},
         updated_at = now()
-      where id = ${data.id} and user_id = ${context.userId}
+      where id = ${data.id} and user_id = ${ownerId}
     `;
-    await sql`delete from invoice_items where invoice_id = ${data.id} and user_id = ${context.userId}`;
-    await insertItems(sql, context.userId, data.id, data, totals.advertisingCost);
+    await sql`delete from invoice_items where invoice_id = ${data.id} and user_id = ${ownerId}`;
+    await insertItems(sql, ownerId, data.id, data, totals.advertisingCost);
     await logAudit(sql, context.userId, "invoice", data.id, "invoice.edited", String(existing[0].invoice_number));
     const rows = await sql`select * from invoices where id = ${data.id}`;
     return mapInvoice(rows[0]!);
@@ -298,13 +304,14 @@ export const duplicateInvoice = createServerFn({ method: "POST" })
   .handler(async ({ context, data: id }) => {
     requirePermission(context.user, "duplicate_invoices");
     const sql = await getSql();
-    const existing = await sql`select * from invoices where id = ${id} and user_id = ${context.userId}`;
+    const ownerId = await getAgencyOwnerId(sql);
+    const existing = await sql`select * from invoices where id = ${id} and user_id = ${ownerId}`;
     if (!existing[0]) throw new Error("Invoice not found.");
     const src = mapInvoice(existing[0]);
     const items = await sql`select * from invoice_items where invoice_id = ${id} order by sort_order`;
     const now = nowDhaka();
     const newId = uid();
-    const number = await nextSerial(sql, context.userId, "invoice", now.year);
+    const number = await nextSerial(sql, ownerId, "invoice", now.year);
     await sql`
       insert into invoices (
         id, user_id, invoice_number, client_id, issue_date, issue_time, due_date, status,
@@ -312,7 +319,7 @@ export const duplicateInvoice = createServerFn({ method: "POST" })
         total, paid_amount, due_amount, payment_terms, notes, is_boosting, ad_budget_usd,
         marketivity_rate, is_sample
       ) values (
-        ${newId}, ${context.userId}, ${number}, ${src.clientId}, ${now.isoDate}, ${now.time},
+        ${newId}, ${ownerId}, ${number}, ${src.clientId}, ${now.isoDate}, ${now.time},
         ${src.dueDate}, ${"unpaid"},
         ${src.subtotal}, ${src.discountType}, ${src.discountValue}, ${src.taxEnabled}, ${src.taxRate},
         ${src.taxAmount}, ${src.serviceCharge}, ${src.cashOutCharge}, ${src.total}, ${0}, ${src.total}, ${src.paymentTerms},
@@ -323,7 +330,7 @@ export const duplicateInvoice = createServerFn({ method: "POST" })
       const it = mapItem(row);
       await sql`
         insert into invoice_items (id, invoice_id, user_id, service_id, service_name, description, qty, unit_price, amount, sort_order)
-        values (${uid()}, ${newId}, ${context.userId}, ${it.serviceId}, ${it.serviceName}, ${it.description}, ${it.qty}, ${it.unitPrice}, ${it.amount}, ${it.sortOrder})
+        values (${uid()}, ${newId}, ${ownerId}, ${it.serviceId}, ${it.serviceName}, ${it.description}, ${it.qty}, ${it.unitPrice}, ${it.amount}, ${it.sortOrder})
       `;
     }
     await logAudit(sql, context.userId, "invoice", newId, "invoice.created", `${number} (duplicate of ${src.invoiceNumber})`);
@@ -336,9 +343,10 @@ export const voidInvoice = createServerFn({ method: "POST" })
   .handler(async ({ context, data: id }) => {
     requirePermission(context.user, "void_invoices");
     const sql = await getSql();
+    const ownerId = await getAgencyOwnerId(sql);
     const rows = await sql`
       update invoices set status = 'void', updated_at = now()
-      where id = ${id} and user_id = ${context.userId} and status != 'void'
+      where id = ${id} and user_id = ${ownerId} and status != 'void'
       returning invoice_number
     `;
     if (!rows[0]) throw new Error("Invoice not found.");
@@ -352,11 +360,12 @@ export const deleteInvoice = createServerFn({ method: "POST" })
   .handler(async ({ context, data: id }) => {
     requirePermission(context.user, "void_invoices");
     const sql = await getSql();
-    const rows = await sql`select invoice_number, status from invoices where id = ${id} and user_id = ${context.userId}`;
+    const ownerId = await getAgencyOwnerId(sql);
+    const rows = await sql`select invoice_number, status from invoices where id = ${id} and user_id = ${ownerId}`;
     if (!rows[0]) throw new Error("Invoice not found.");
 
     const payCount = await sql<{ count: number }>`
-      select count(*)::int as count from payments where invoice_id = ${id} and user_id = ${context.userId}
+      select count(*)::int as count from payments where invoice_id = ${id} and user_id = ${ownerId}
     `;
     if (Number(payCount[0]?.count ?? 0) > 0) {
       throw new Error(
@@ -366,8 +375,8 @@ export const deleteInvoice = createServerFn({ method: "POST" })
 
     await sql.transaction(async (tx) => {
       await logAudit(tx, context.userId, "invoice", id, "invoice.deleted", String(rows[0].invoice_number));
-      await tx`delete from invoice_items where invoice_id = ${id} and user_id = ${context.userId}`;
-      await tx`delete from invoices where id = ${id} and user_id = ${context.userId}`;
+      await tx`delete from invoice_items where invoice_id = ${id} and user_id = ${ownerId}`;
+      await tx`delete from invoices where id = ${id} and user_id = ${ownerId}`;
     });
     return { ok: true };
   });

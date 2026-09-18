@@ -10,6 +10,7 @@ import { logAudit } from "./audit";
 import { requirePermission } from "./authz";
 import { mapClient, mapInvoice, mapItem, mapPayment } from "./map";
 import { nextSerial } from "./serial";
+import { getAgencyOwnerId } from "./workspace";
 
 export type RecordPaymentInput = {
   invoiceId: string;
@@ -28,12 +29,13 @@ export const listPayments = createServerFn({ method: "GET" })
   .handler(async ({ context, data: q }) => {
     requirePermission(context.user, "view_payments");
     const sql = await getSql();
+    const ownerId = await getAgencyOwnerId(sql);
     const rows = await sql`
       select p.*, i.invoice_number, i.client_id, coalesce(c.name, 'Client') as client_name
       from payments p
       join invoices i on i.id = p.invoice_id
       left join clients c on c.id = i.client_id
-      where p.user_id = ${context.userId}
+      where p.user_id = ${ownerId}
       order by p.created_at desc
     `;
     let list = rows.map((r) => mapPayment(r));
@@ -57,17 +59,18 @@ export const getPayment = createServerFn({ method: "GET" })
   .handler(async ({ context, data: id }) => {
     requirePermission(context.user, "view_payments");
     const sql = await getSql();
+    const ownerId = await getAgencyOwnerId(sql);
     const rows = await sql`
       select p.*, i.invoice_number, i.client_id, coalesce(c.name, 'Client') as client_name
       from payments p
       join invoices i on i.id = p.invoice_id
       left join clients c on c.id = i.client_id
-      where p.id = ${id} and p.user_id = ${context.userId}
+      where p.id = ${id} and p.user_id = ${ownerId}
     `;
     if (!rows[0]) throw new Error("Receipt not found.");
     const payment = mapPayment(rows[0]);
-    const invRows = await sql`select * from invoices where id = ${payment.invoiceId} and user_id = ${context.userId}`;
-    const clientRows = await sql`select * from clients where id = ${payment.clientId} and user_id = ${context.userId}`;
+    const invRows = await sql`select * from invoices where id = ${payment.invoiceId} and user_id = ${ownerId}`;
+    const clientRows = await sql`select * from clients where id = ${payment.clientId} and user_id = ${ownerId}`;
     const items = await sql`select * from invoice_items where invoice_id = ${payment.invoiceId} order by sort_order`;
     return {
       payment,
@@ -84,7 +87,8 @@ export const recordPayment = createServerFn({ method: "POST" })
     const amount = parseMoney(data.amount);
     if (amount <= 0) throw new Error("Please enter a valid amount.");
     const sql = await getSql();
-    const rows = await sql`select * from invoices where id = ${data.invoiceId} and user_id = ${context.userId}`;
+    const ownerId = await getAgencyOwnerId(sql);
+    const rows = await sql`select * from invoices where id = ${data.invoiceId} and user_id = ${ownerId}`;
     if (!rows[0]) throw new Error("Invoice not found.");
     const invoice = mapInvoice(rows[0]);
     if (invoice.status === "void") throw new Error("Cannot record payment on a voided invoice.");
@@ -95,8 +99,8 @@ export const recordPayment = createServerFn({ method: "POST" })
     const remaining = Math.max(0, previousDue - amount);
     const now = nowDhaka();
     const id = uid();
-    const txn = await nextSerial(sql, context.userId, "transaction", now.year);
-    const rcp = await nextSerial(sql, context.userId, "receipt", now.year);
+    const txn = await nextSerial(sql, ownerId, "transaction", now.year);
+    const rcp = await nextSerial(sql, ownerId, "receipt", now.year);
 
     return await sql.transaction(async (tx) => {
       await tx`
@@ -105,7 +109,7 @@ export const recordPayment = createServerFn({ method: "POST" })
           payment_date, payment_time, external_txn_id, notes, previous_due, remaining_due,
           status, voided_at, void_reason
         ) values (
-          ${id}, ${context.userId}, ${invoice.id}, ${txn}, ${rcp}, ${amount}, ${data.method},
+          ${id}, ${ownerId}, ${invoice.id}, ${txn}, ${rcp}, ${amount}, ${data.method},
           ${data.paymentDate || now.isoDate}, ${data.paymentTime || now.time},
           ${(data.externalTxnId ?? "").trim()}, ${(data.notes ?? "").trim()}, ${previousDue}, ${remaining},
           ${"active"}, ${null}, ${""}
@@ -115,7 +119,7 @@ export const recordPayment = createServerFn({ method: "POST" })
       // Recalculate invoice based on all active payments
       const activeRows = await tx<{ amount: number }>`
         select amount from payments
-        where invoice_id = ${invoice.id} and user_id = ${context.userId} and status = 'active'
+        where invoice_id = ${invoice.id} and user_id = ${ownerId} and status = 'active'
       `;
       const recalculatedPaid = parseMoney(activeRows.reduce((sum, r) => sum + Number(r.amount), 0));
       const recalculatedDue = dueOf(invoice.total, recalculatedPaid);
@@ -127,7 +131,7 @@ export const recordPayment = createServerFn({ method: "POST" })
           due_amount = ${recalculatedDue},
           status = ${recalculatedStatus},
           updated_at = now()
-        where id = ${invoice.id} and user_id = ${context.userId}
+        where id = ${invoice.id} and user_id = ${ownerId}
       `;
 
       await logAudit(tx, context.userId, "payment", invoice.id, "payment.recorded", txn);
@@ -151,11 +155,12 @@ export const voidPayment = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     requirePermission(context.user, "void_payments");
     const sql = await getSql();
+    const ownerId = await getAgencyOwnerId(sql);
     const rows = await sql`
       select p.*, i.total, i.invoice_number, i.due_date
       from payments p
       join invoices i on i.id = p.invoice_id
-      where p.id = ${data.paymentId} and p.user_id = ${context.userId}
+      where p.id = ${data.paymentId} and p.user_id = ${ownerId}
     `;
     if (!rows[0]) throw new Error("Payment not found.");
     if (String(rows[0].status) === "void") throw new Error("Payment is already voided.");
@@ -170,13 +175,13 @@ export const voidPayment = createServerFn({ method: "POST" })
           status = 'void',
           voided_at = now(),
           void_reason = ${reason}
-        where id = ${data.paymentId} and user_id = ${context.userId}
+        where id = ${data.paymentId} and user_id = ${ownerId}
       `;
 
       // Recalculate invoice totals based on ACTIVE payments only
       const activeRows = await tx<{ amount: number }>`
         select amount from payments
-        where invoice_id = ${invoiceId} and user_id = ${context.userId} and status = 'active'
+        where invoice_id = ${invoiceId} and user_id = ${ownerId} and status = 'active'
       `;
       const newPaid = parseMoney(activeRows.reduce((sum, r) => sum + Number(r.amount), 0));
       const total = parseMoney(rows[0].total);
@@ -195,7 +200,7 @@ export const voidPayment = createServerFn({ method: "POST" })
           due_amount = ${newDue},
           status = ${newStatus},
           updated_at = now()
-        where id = ${invoiceId} and user_id = ${context.userId}
+        where id = ${invoiceId} and user_id = ${ownerId}
       `;
 
       await logAudit(

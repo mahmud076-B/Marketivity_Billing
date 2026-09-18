@@ -59,7 +59,7 @@ export function InvoicePaper({
         className,
       )}
     >
-      <header className="relative bg-[#0B0714] px-7 py-6 text-[#F4EFE6]">
+      <header className="relative bg-[#FFF0F5] px-7 py-6 text-[#1A1424]">
         <div className="flex items-start justify-between gap-4">
           <div className="flex items-center gap-3">
             {settings.logoDataUrl ? (

@@ -7,6 +7,7 @@ import { logAudit } from "./audit";
 import { requirePermission } from "./authz";
 import { mapClient, mapInvoiceRow, mapPayment, n } from "./map";
 import { nextSerial } from "./serial";
+import { getAgencyOwnerId } from "./workspace";
 import type { Client, ClientProfile, ClientStatement, StatementEntry } from "@/lib/types";
 
 export type ClientInput = {
@@ -41,9 +42,10 @@ export const listClients = createServerFn({ method: "GET" })
   .handler(async ({ context, data }) => {
     requirePermission(context.user, "view_clients");
     const sql = await getSql();
+    const ownerId = await getAgencyOwnerId(sql);
     const rows = data?.includeArchived
-      ? await sql`select * from clients where user_id = ${context.userId} order by created_at desc`
-      : await sql`select * from clients where user_id = ${context.userId} and is_archived = false order by created_at desc`;
+      ? await sql`select * from clients where user_id = ${ownerId} order by created_at desc`
+      : await sql`select * from clients where user_id = ${ownerId} and is_archived = false order by created_at desc`;
     return rows.map((r) => mapClient(r));
   });
 
@@ -53,14 +55,15 @@ export const getClient = createServerFn({ method: "GET" })
   .handler(async ({ context, data: id }): Promise<ClientProfile> => {
     requirePermission(context.user, "view_clients");
     const sql = await getSql();
-    const rows = await sql`select * from clients where id = ${id} and user_id = ${context.userId}`;
+    const ownerId = await getAgencyOwnerId(sql);
+    const rows = await sql`select * from clients where id = ${id} and user_id = ${ownerId}`;
     const client = rows[0] ? mapClient(rows[0]) : null;
     if (!client) throw new Error("Client not found.");
     const invoices = await sql`
       select i.*, coalesce(c.name, 'Client') as client_name, coalesce(c.business_name, '') as business_name
       from invoices i
       left join clients c on c.id = i.client_id
-      where i.user_id = ${context.userId} and i.client_id = ${id}
+      where i.user_id = ${ownerId} and i.client_id = ${id}
       order by i.issue_date desc, i.created_at desc
     `;
     const payments = await sql`
@@ -68,7 +71,7 @@ export const getClient = createServerFn({ method: "GET" })
       from payments p
       join invoices i on i.id = p.invoice_id
       left join clients c on c.id = i.client_id
-      where p.user_id = ${context.userId} and i.client_id = ${id}
+      where p.user_id = ${ownerId} and i.client_id = ${id}
       order by p.payment_date desc, p.created_at desc
     `;
     const active = invoices.filter((r) => String(r.status) !== "void");
@@ -91,14 +94,15 @@ export const createClient = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     requirePermission(context.user, "create_clients");
     const sql = await getSql();
+    const ownerId = await getAgencyOwnerId(sql);
     const id = uid();
-    const code = await nextSerial(sql, context.userId, "client", dhakaYear());
+    const code = await nextSerial(sql, ownerId, "client", dhakaYear());
     await sql`
       insert into clients (
         id, user_id, client_code, name, business_name, phone, email, address,
         facebook_page, website, notes, is_sample
       ) values (
-        ${id}, ${context.userId}, ${code}, ${data.name}, ${data.businessName}, ${data.phone},
+        ${id}, ${ownerId}, ${code}, ${data.name}, ${data.businessName}, ${data.phone},
         ${data.email}, ${data.address}, ${data.facebookPage}, ${data.website}, ${data.notes}, ${false}
       )
     `;
@@ -113,6 +117,7 @@ export const updateClient = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     requirePermission(context.user, "update_clients");
     const sql = await getSql();
+    const ownerId = await getAgencyOwnerId(sql);
     const rows = await sql`
       update clients set
         name = ${data.name},
@@ -123,7 +128,7 @@ export const updateClient = createServerFn({ method: "POST" })
         facebook_page = ${data.facebookPage},
         website = ${data.website},
         notes = ${data.notes}
-      where id = ${data.id} and user_id = ${context.userId}
+      where id = ${data.id} and user_id = ${ownerId}
       returning *
     `;
     if (!rows[0]) throw new Error("Client not found.");
@@ -136,28 +141,29 @@ export const deleteClient = createServerFn({ method: "POST" })
   .handler(async ({ context, data: id }) => {
     requirePermission(context.user, "update_clients");
     const sql = await getSql();
-    const clientRows = await sql`select name, client_code from clients where id = ${id} and user_id = ${context.userId}`;
+    const ownerId = await getAgencyOwnerId(sql);
+    const clientRows = await sql`select name, client_code from clients where id = ${id} and user_id = ${ownerId}`;
     if (!clientRows[0]) throw new Error("Client not found.");
 
     const activeInvoices = await sql<{ c: number }>`
-      select count(*)::int as c from invoices where client_id = ${id} and user_id = ${context.userId} and status != 'void'
+      select count(*)::int as c from invoices where client_id = ${id} and user_id = ${ownerId} and status != 'void'
     `;
     if ((activeInvoices[0]?.c ?? 0) > 0) {
       throw new Error("This client has active invoices and cannot be deleted. Please void or settle active invoices first.");
     }
 
     const totalInvoices = await sql<{ c: number }>`
-      select count(*)::int as c from invoices where client_id = ${id} and user_id = ${context.userId}
+      select count(*)::int as c from invoices where client_id = ${id} and user_id = ${ownerId}
     `;
     if ((totalInvoices[0]?.c ?? 0) > 0) {
       // Archive client to preserve invoice integrity for voided invoices
-      await sql`update clients set is_archived = true, updated_at = now() where id = ${id} and user_id = ${context.userId}`;
+      await sql`update clients set is_archived = true, updated_at = now() where id = ${id} and user_id = ${ownerId}`;
       await logAudit(sql, context.userId, "client", id, "client.archived", String(clientRows[0].client_code));
       return { ok: true, archived: true };
     }
 
     await logAudit(sql, context.userId, "client", id, "client.deleted", String(clientRows[0].client_code));
-    await sql`delete from clients where id = ${id} and user_id = ${context.userId}`;
+    await sql`delete from clients where id = ${id} and user_id = ${ownerId}`;
     return { ok: true, archived: false };
   });
 
@@ -169,7 +175,8 @@ export const getClientStatement = createServerFn({ method: "GET" })
   .handler(async ({ context, data: id }): Promise<ClientStatement> => {
     requirePermission(context.user, "view_statements");
     const sql = await getSql();
-    const rows = await sql`select * from clients where id = ${id} and user_id = ${context.userId}`;
+    const ownerId = await getAgencyOwnerId(sql);
+    const rows = await sql`select * from clients where id = ${id} and user_id = ${ownerId}`;
     const client = rows[0] ? mapClient(rows[0]) : null;
     if (!client) throw new Error("Client not found.");
 
@@ -177,14 +184,14 @@ export const getClientStatement = createServerFn({ method: "GET" })
       select i.*, coalesce(c.name, 'Client') as client_name, coalesce(c.business_name, '') as business_name
       from invoices i
       left join clients c on c.id = i.client_id
-      where i.user_id = ${context.userId} and i.client_id = ${id}
+      where i.user_id = ${ownerId} and i.client_id = ${id}
     `;
     const paymentsRows = await sql`
       select p.*, i.invoice_number, i.client_id, coalesce(c.name, 'Client') as client_name
       from payments p
       join invoices i on i.id = p.invoice_id
       left join clients c on c.id = i.client_id
-      where p.user_id = ${context.userId} and i.client_id = ${id}
+      where p.user_id = ${ownerId} and i.client_id = ${id}
     `;
 
     const invoices = invoicesRows.map((r) => mapInvoiceRow(r));

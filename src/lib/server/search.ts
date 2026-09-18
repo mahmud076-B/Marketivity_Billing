@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { getSql } from "@/lib/db";
 import type { SearchHit } from "@/lib/types";
+import { getAgencyOwnerId } from "./workspace";
 
 export const globalSearch = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
@@ -10,12 +11,13 @@ export const globalSearch = createServerFn({ method: "GET" })
     const q = raw.trim().toLowerCase();
     if (q.length < 1) return [];
     const sql = await getSql();
+    const ownerId = await getAgencyOwnerId(sql);
     const like = `%${q}%`;
     const hits: SearchHit[] = [];
     const clients = await sql`
       select id, name, business_name, phone, client_code
       from clients
-      where user_id = ${context.userId}
+      where user_id = ${ownerId}
         and (
           lower(name) like ${like}
           or lower(business_name) like ${like}
@@ -37,7 +39,7 @@ export const globalSearch = createServerFn({ method: "GET" })
     const invoices = await sql`
       select i.id, i.invoice_number, c.name as client_name
       from invoices i join clients c on c.id = i.client_id
-      where i.user_id = ${context.userId} and lower(i.invoice_number) like ${like}
+      where i.user_id = ${ownerId} and lower(i.invoice_number) like ${like}
       limit 6
     `;
     for (const i of invoices) {
@@ -54,7 +56,7 @@ export const globalSearch = createServerFn({ method: "GET" })
       from payments p
       join invoices i on i.id = p.invoice_id
       join clients c on c.id = i.client_id
-      where p.user_id = ${context.userId}
+      where p.user_id = ${ownerId}
         and (lower(p.receipt_number) like ${like} or lower(p.transaction_id) like ${like} or lower(p.external_txn_id) like ${like})
       limit 6
     `;

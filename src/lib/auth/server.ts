@@ -41,6 +41,7 @@ import { emailAndPasswordEnabled } from "./email-password.ts";
 import { GATE_PROVIDER_ID, gateIdentitySessions } from "./gate-session.server.ts";
 import { GROK_PROVIDERS } from "./providers.ts";
 import { pgliteDialect } from "./pglite-dialect.ts";
+import { getConfiguredPublicOrigin } from "../public-url.server.ts";
 import {
   GROK_ISSUER_DEFAULT,
   PREVIEW_ALLOWED_HOSTS,
@@ -92,7 +93,7 @@ export const authConfigured =
 // it derives the origin per-request from the (proxied) host, validated against the
 // preview allowlist, which makes the OAuth `redirect_uri` the concrete preview URL
 // the broker's preview client accepts.
-const explicitBaseURL = env("BETTER_AUTH_URL");
+const explicitBaseURL = getConfiguredPublicOrigin();
 // Explicit `string[]` (not a readonly tuple) — Better Auth's DynamicBaseURLConfig
 // requires a mutable `allowedHosts: string[]`.
 const previewAllowedHosts: string[] = [...PREVIEW_ALLOWED_HOSTS];

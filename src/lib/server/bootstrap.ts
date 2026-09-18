@@ -8,6 +8,7 @@ import { uid } from "@/lib/utils";
 import { logAudit } from "./audit";
 import { mapSettings } from "./map";
 import { nextSerial } from "./serial";
+import { getAgencyOwnerId } from "./workspace";
 
 const CATALOG = [
   { name: "Facebook Ads", rate: 8000, desc: "Facebook advertising setup, targeting and campaign management." },
@@ -29,7 +30,7 @@ export const bootstrapWorkspace = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .handler(async ({ context }) => {
     const sql = await getSql();
-    const userId = context.userId;
+    const userId = await getAgencyOwnerId(sql);
     const existing = await sql`select user_id, sample_loaded from settings where user_id = ${userId}`;
     if (existing.length === 0) {
       await sql`
@@ -72,12 +73,16 @@ export const bootstrapWorkspace = createServerFn({ method: "POST" })
       return { settings: { ...settings, sampleLoaded: true }, seeded: false };
     }
 
-    await seedSample(sql, userId);
+    await seedSample(sql, userId, context.userId);
     await sql`update settings set sample_loaded = true where user_id = ${userId}`;
     return { settings: { ...settings, sampleLoaded: true }, seeded: true };
   });
 
-async function seedSample(sql: Awaited<ReturnType<typeof getSql>>, userId: string) {
+async function seedSample(
+  sql: Awaited<ReturnType<typeof getSql>>,
+  userId: string,
+  actorUserId: string,
+) {
   const year = dhakaYear();
   const today = dhakaIsoDate();
   const time = formatTimeDhaka();
@@ -269,7 +274,7 @@ async function seedSample(sql: Awaited<ReturnType<typeof getSql>>, userId: strin
         values (${uid()}, ${id}, ${userId}, ${null}, ${it.name}, ${it.desc}, ${it.qty}, ${it.price}, ${amt}, ${order++})
       `;
     }
-    await logAudit(sql, userId, "invoice", id, "invoice.created", `${number} (sample)`);
+    await logAudit(sql, actorUserId, "invoice", id, "invoice.created", `${number} (sample)`);
     if (paid > 0) {
       const txn = await nextSerial(sql, userId, "transaction", year);
       const rcp = await nextSerial(sql, userId, "receipt", year);
@@ -282,8 +287,8 @@ async function seedSample(sql: Awaited<ReturnType<typeof getSql>>, userId: strin
           ${inv.date}, ${time}, ${""}, ${"Sample payment"}, ${totals.total}, ${dueAmt}
         )
       `;
-      await logAudit(sql, userId, "payment", id, "payment.recorded", txn);
-      await logAudit(sql, userId, "receipt", id, "receipt.generated", rcp);
+      await logAudit(sql, actorUserId, "payment", id, "payment.recorded", txn);
+      await logAudit(sql, actorUserId, "receipt", id, "receipt.generated", rcp);
     }
   }
 }

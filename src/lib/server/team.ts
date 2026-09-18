@@ -5,6 +5,7 @@ import { uid } from "@/lib/utils";
 import { setCookie } from "@tanstack/react-start/server";
 import { requirePermission } from "./authz";
 import { DEV_USER_ID } from "@/lib/auth/verify.server";
+import { buildInvitationUrl } from "@/lib/public-url.server";
 import crypto from "crypto";
 
 export const listTeamMembers = createServerFn({ method: "GET" })
@@ -80,7 +81,7 @@ export const inviteUser = createServerFn({ method: "POST" })
 
     // In a real app, you would send an email here.
     // Since we don't have an email provider, we will return the token so the admin can copy the link.
-    return { id, token };
+    return { id, token, inviteUrl: buildInvitationUrl(token) };
   });
 
 export const revokeInvitation = createServerFn({ method: "POST" })

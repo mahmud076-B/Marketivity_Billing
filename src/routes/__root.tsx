@@ -35,7 +35,7 @@ function RootDocument() {
   const [queryClient] = useState(
     () =>
       new QueryClient({
-        defaultOptions: { queries: { staleTime: 8_000, retry: 1, refetchOnWindowFocus: false } },
+        defaultOptions: { queries: { staleTime: 8_000, retry: 1, refetchOnWindowFocus: true } },
       }),
   );
   return (

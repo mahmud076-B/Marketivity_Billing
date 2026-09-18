@@ -4,6 +4,7 @@ import { getSql } from "@/lib/db";
 import { uid } from "@/lib/utils";
 import { requirePermission } from "./authz";
 import { mapService } from "./map";
+import { getAgencyOwnerId } from "./workspace";
 
 export type ServiceInput = {
   name: string;
@@ -32,7 +33,8 @@ export const listServices = createServerFn({ method: "GET" })
   .handler(async ({ context }) => {
     requirePermission(context.user, "manage_catalog");
     const sql = await getSql();
-    const rows = await sql`select * from services where user_id = ${context.userId} order by name asc`;
+    const ownerId = await getAgencyOwnerId(sql);
+    const rows = await sql`select * from services where user_id = ${ownerId} order by name asc`;
     return rows.map((r) => mapService(r));
   });
 
@@ -42,10 +44,11 @@ export const createService = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     requirePermission(context.user, "manage_catalog");
     const sql = await getSql();
+    const ownerId = await getAgencyOwnerId(sql);
     const id = uid();
     await sql`
       insert into services (id, user_id, name, description, default_rate, is_boosting, usd_rate, is_sample)
-      values (${id}, ${context.userId}, ${data.name}, ${data.description}, ${data.defaultRate}, ${data.isBoosting}, ${data.usdRate}, ${false})
+      values (${id}, ${ownerId}, ${data.name}, ${data.description}, ${data.defaultRate}, ${data.isBoosting}, ${data.usdRate}, ${false})
     `;
     const rows = await sql`select * from services where id = ${id}`;
     return mapService(rows[0]!);
@@ -57,6 +60,7 @@ export const updateService = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     requirePermission(context.user, "manage_catalog");
     const sql = await getSql();
+    const ownerId = await getAgencyOwnerId(sql);
     const rows = await sql`
       update services set
         name = ${data.name},
@@ -64,7 +68,7 @@ export const updateService = createServerFn({ method: "POST" })
         default_rate = ${data.defaultRate},
         is_boosting = ${data.isBoosting},
         usd_rate = ${data.usdRate}
-      where id = ${data.id} and user_id = ${context.userId}
+      where id = ${data.id} and user_id = ${ownerId}
       returning *
     `;
     if (!rows[0]) throw new Error("Service not found.");
@@ -77,6 +81,7 @@ export const deleteService = createServerFn({ method: "POST" })
   .handler(async ({ context, data: id }) => {
     requirePermission(context.user, "manage_catalog");
     const sql = await getSql();
-    await sql`delete from services where id = ${id} and user_id = ${context.userId}`;
+    const ownerId = await getAgencyOwnerId(sql);
+    await sql`delete from services where id = ${id} and user_id = ${ownerId}`;
     return { ok: true };
   });
