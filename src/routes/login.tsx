@@ -5,10 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  GROK_PROVIDERS,
   authClient,
   authEnabled,
-  signIn,
 } from "@/lib/auth/client";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
 
@@ -87,24 +85,6 @@ function Login() {
                 {busy ? "Please wait…" : "Sign in"}
               </Button>
             </form>
-            <div className="my-5 flex items-center gap-3 text-xs uppercase tracking-wide text-muted-foreground">
-              <span className="h-px flex-1 bg-border" />
-              or
-              <span className="h-px flex-1 bg-border" />
-            </div>
-            <div className="space-y-2">
-              {GROK_PROVIDERS.map((p) => (
-                <Button
-                  key={p.providerId}
-                  type="button"
-                  variant="outline"
-                  className="w-full"
-                  onClick={() => signIn(p.providerId, { callbackURL: "/" })}
-                >
-                  Continue with {p.label}
-                </Button>
-              ))}
-            </div>
           </>
         ) : (
           <p className="mt-6 text-sm text-muted-foreground">Sign-in is disabled.</p>
